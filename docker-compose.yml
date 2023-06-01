@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  db_redis:
+    image: redis:latest
+    ports:
+      - 6379:6379
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+  app:
+    image: python:3.10.4-slim-buster
+    ports:
+      - '9521:9521'
+    networks:
+      - app_redis 
+
+networks:
+  app_redis:
+  
+volumes:
+  redis_data:
