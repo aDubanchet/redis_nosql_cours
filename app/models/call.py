@@ -46,7 +46,8 @@ class Call():
         self._creation_time = datetime.now() # _ pour dire que ce sont des attributs privés
         self._phone_number = phone_number
         self._status = 0
-        self._description = ""
+        self._description = " "
+        self._operator_id = 0
 
         self.__post_init__()
 
@@ -84,19 +85,33 @@ class Call():
 
             if self._id not in identifiants_appels : 
                 # On enregistre l'identifiant de l'appel 
-                redis_connexion.sadd("identifiants_appels_entrants",repr(self._id).encode('utf-8'))
+                redis_connexion.sadd("identifiants_appels_entrants",repr(self._id))
 
                 # Première méthode : utilisant hset 
                 redis_connexion.hset(
-                    "appels_entrants :{}".format(repr(self._id).encode('utf-8')),
+                    "appels_entrants :{}".format(repr(self._id)),
                     "creation_time",self._creation_time.strftime("%m/%d/%Y, %H:%M:%S").encode()
                 )
                 redis_connexion.hset(
-                    "appels_entrants :{}".format(repr(self._id).encode('utf-8')),
+                    "appels_entrants :{}".format(repr(self._id)),
                     "phone_number",self._phone_number.encode()
                 )
 
-                print("Enregistré dans Redis")
+                redis_connexion.hset(
+                    "appels_entrants :{}".format(repr(self._id)),
+                    "status",self.operator_id 
+                )
+
+                redis_connexion.hset(
+                    "appels_entrants :{}".format(repr(self._id)),
+                    "operator_id",self._status 
+                )
+
+                redis_connexion.hset(
+                    "appels_entrants :{}".format(repr(self._id)),
+                    "description",self.description 
+                )
+
         return self
 
     # ------------------------------
@@ -104,13 +119,15 @@ class Call():
     # ------------------------------
     @property
     def operator_id(self):
-        return self.operator_id 
+        return self._operator_id 
 
     @operator_id.setter
     def operator_id(self,value):
         # Pour assigner un opérateur à un Call 
+        self._operator_id = value
+
         redis_connexion.hset(
-            "appels_entrants :{}".format(repr(self._id).encode('utf-8')),
+            "appels_entrants :{}".format(repr(self._id)),
             "operator_id",value
         )
 
@@ -127,7 +144,7 @@ class Call():
         self._status = value
 
         redis_connexion.hset(
-            "appels_entrants :{}".format(repr(self._id).encode('utf-8')),
+            "appels_entrants :{}".format(repr(self._id)),
             "status",value
         )
         return self
@@ -143,8 +160,8 @@ class Call():
         self._description = value
 
         redis_connexion.hset(
-            "appels_entrants :{}".format(repr(self._id).encode('utf-8')),
-            "description",value
+            "appels_entrants :{}".format(repr(self._id)),
+            "description", value
         )
         return self
 
@@ -152,10 +169,13 @@ class Call():
     def duree(self):
         # une méthode calculant la durée à chaque fois qu'il est appelé
         current_time = datetime.now()
-        datetime_creation_time = datetime.strptime(self._creation_time, "%m/%d/%Y, %H:%M:%S")
-        duration = current_time - datetime_creation_time 
+        if not isinstance(self._creation_time, datetime):
+            datetime_creation_time = datetime.strptime(self._creation_time, "%m/%d/%Y, %H:%M:%S")
+            duration = current_time - datetime_creation_time
+        else:
+            duration = current_time - self._creation_time
         return duration.total_seconds()
-    
+
     # ------------------------------
     # Méthodes de l'objet
     # ------------------------------
@@ -166,7 +186,8 @@ class Call():
         """
         
 
-        details_appel = redis_connexion.hgetall("appels_entrants :{}".format(repr(self._id).encode('utf-8')))
+        details_appel = redis_connexion.hgetall("appels_entrants :{}".format(self._id))
+        details_appel = {key.decode(): value.decode() for key, value in details_appel.items()}
 
         details_appel['id'] = self._id # on ajoute l'identifiant au dictionnaire 
 
@@ -179,7 +200,7 @@ class Call():
         Supprime un appel 
         """
         # supprimer l'élément id du set redis 
-        redis_connexion.srem("identifiants_appels_entrants",repr(self._id).encode('utf-8'))
+        redis_connexion.srem("identifiants_appels_entrants",self._id)
 
         # supprimer le hachage Redis contenant les caractéristiques de l'appel 
         redis_connexion.delete("appels_entrants :{}".format(self._id))
@@ -188,28 +209,48 @@ class Call():
     # ------------------------------
     # Méthodes statiques
     # ------------------------------
+
+    @staticmethod
+    def data_by_id(id_call):
+        """
+        Retourne les données d'un appel par id 
+        """
+        # On récupère la liste des appels entrants pour un identifiant donné 
+        details_appel = redis_connexion.hgetall("appels_entrants :{}".format(id_call))
+        
+        # Convertir les clés et les valeurs en chaînes de caractères
+        details_appel = {key.decode(): value.decode() for key, value in details_appel.items()}
+
+        return details_appel
+
     @staticmethod
     def list_id():
         """
         Liste tous les identifiants des appels enregistrés dans Redis,
         enregistrés dans le set identifiants_appels_entrants
         """
-        return redis_connexion.smembers("identifiants_appels_entrants")
+        return [identifiant.decode() for identifiant in redis_connexion.smembers("identifiants_appels_entrants")]
+
 
     @staticmethod
     def list():
         """
-        Liste tous les appels ainsi que leurs descriptions, 
-        enregistrés dans le hash Redis appels_entrants + id 
+        Liste tous les appels ainsi que leurs descriptions,
+        enregistrés dans le hash Redis appels_entrants + id
         """
         appels = []
         identifiants_appels_entrants = redis_connexion.smembers("identifiants_appels_entrants")
         for identifiant in identifiants_appels_entrants:
-            details_appel = redis_connexion.hgetall("appels_entrants :{}".format(identifiant))   
-            details_appel["id"] = identifiant # on ajoute l'identifiant au dictionnaire 
+            details_appel = redis_connexion.hgetall("appels_entrants :{}".format(identifiant))
+
+            # Convertir les clés et les valeurs en chaînes de caractères
+            details_appel = {key.decode(): value.decode() for key, value in details_appel.items()}
+
+            details_appel["id"] = identifiant.decode()  # on ajoute l'identifiant au dictionnaire
             appels.append(details_appel)
 
         return appels
+
 
     @staticmethod
     def destroy_all():
@@ -229,14 +270,12 @@ class Call():
             # on supprime les éléments du hash contenant les détails de l'appel 
             redis_connexion.delete("appels_entrants :{}".format(key))
 
-        all_keys = Call.list_id()
-
     @staticmethod
     def get_instance_by_id(identifiant):
         """
         Retourne un objet Call pour un identifiant donné
         """
-        identifiants_appels_entrants = redis_connexion.smembers("identifiants_appels_entrants")
+        identifiants_appels_entrants = Call.list_id()
 
         if identifiant in identifiants_appels_entrants:
             details_appel = redis_connexion.hgetall("appels_entrants :{}".format(identifiant))
@@ -261,6 +300,8 @@ class Call():
         Liste les appels entrants
         """
         pass
+
+
 
 if __name__ == '__main__' : 
     

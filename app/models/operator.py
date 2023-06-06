@@ -1,7 +1,6 @@
-from datetime import datetime
 from dataclasses import dataclass
-from queue import Empty
 import redis 
+from .call import *
 
 redis_connexion = redis.Redis(host="localhost",port=6379)
 
@@ -50,22 +49,25 @@ class Operator():
             if self._id not in identifiant_operateur:
 
                 # On enregistre l'identifiant de l'appel 
-                redis_connexion.sadd("identifiants_operateurs",repr(self._id).encode('utf-8'))
+                redis_connexion.sadd("identifiants_operateurs",repr(self._id))
 
                 # Première méthode : utilisant hset 
 
 
                 redis_connexion.hset(
-                    "operateur :{}".format(repr(self._id).encode('utf-8')),
+                    "operateur :{}".format(repr(self._id)),
                     "firstname",self._firstname.encode()
                 )
 
                 redis_connexion.hset(
-                    "operateur :{}".format(repr(self._id).encode('utf-8')),
+                    "operateur :{}".format(repr(self._id)),
                     "surname",self._surname.encode()
                 ) 
 
-                print("Enregistré dans Redis")
+                redis_connexion.hset(
+                    "operateur :{}".format(repr(self._id)),
+                    "status",self._status 
+                )
 
         return self
         
@@ -83,7 +85,7 @@ class Operator():
         # Pour assigner un opérateur à un Call 
         self._status = value
         redis_connexion.hset(
-            "operateur :{}".format(repr(self._id).encode('utf-8')),
+            "operateur :{}".format(repr(self._id)),
             "status",value
         )
 
@@ -96,8 +98,6 @@ class Operator():
     @call_id.setter
     def call_id(self,id_call):
         # Pour assigner un status à un Call 
-
-
         # Si status = 0, càd que l'opérateur n'a pas d'appels 
         if self.status == 0 :
         # Si call_id == 0 : ça que l'opérateur n'a pas d'appels
@@ -105,15 +105,14 @@ class Operator():
                 # Si le call n'a pas d'opérateurs
                 # cad si call.status == 0 
 
-                # On récupère la liste des appels entrants pour un identifiant donné 
-                details_appel = redis_connexion.hgetall("appels_entrants :{}".format(id_call)) 
+                details_appel = Call.data_by_id(id_call)
                 
                 # On vérifie si l'appel existe bien 
                 if not details_appel :
                     raise Exception("L'appel n'a pas été trouvé")
 
                 # Si aucun operateur ou si le status de l'appel n'a pas été défini 
-                if details_appel['operator_id'] == 0 and details_appel['status'] == 0 :
+                if details_appel['operator_id'] == "0" and details_appel['status'] == "0" :
 
                     # on attribute l'appel à l'opérateur 
                     self._call_id = id_call
@@ -144,7 +143,9 @@ class Operator():
         Retourne les caractéristiques de l'appel
         """
 
-        details_operateur = redis_connexion.hgetall("operateur :{}".format(repr(self._id).encode('utf-8')))
+        details_operateur = redis_connexion.hgetall("operateur :{}".format(self._id))
+
+        details_operateur = {key.decode(): value.decode() for key, value in details_operateur.items()}
 
         details_operateur['id'] = self._id # on ajoute l'identifiant au dictionnaire 
 
@@ -155,7 +156,7 @@ class Operator():
         Supprime un appel 
         """
         # supprimer l'élément id du set redis 
-        result = redis_connexion.srem("identifiants_operateurs",self._id)
+        result = redis_connexion.srem("identifiants_operateurs",self._id) #TODO : Raise an exception
 
         # supprimer le hachage Redis contenant les caractéristiques de l'appel 
         redis_connexion.delete("operateur :{}".format(self._id))
@@ -164,27 +165,59 @@ class Operator():
     # ------------------------------
     # Méthodes statiques
     # ------------------------------
+
+    @staticmethod
+    def list_id():
+        """
+        Liste tous les identifiants des appels enregistrés dans Redis,
+        enregistrés dans le set identifiants_appels_entrants
+        """
+        return [identifiant.decode() for identifiant in redis_connexion.smembers("identifiants_operateurs")]
+
     @staticmethod
     def list():
         """
-        Liste tous les opérateurs ainsi que leurs descriptions, 
-        enregistrés dans le hash Redis operateur + id 
+        Liste tous les opérateurs ainsi que leurs descriptions,
+        enregistrés dans le hash Redis operateur + id
         """
         operateurs = []
-        identifiants_operateurs= redis_connexion.smembers("identifiants_operateurs")
+        identifiants_operateurs = redis_connexion.smembers("identifiants_operateurs")
         for identifiant in identifiants_operateurs:
-            details_operateur = redis_connexion.hgetall("operateur :{}".format(identifiant))   
-            details_operateur["id"] = identifiant # on ajoute l'identifiant au dictionnaire
-            operateurs.append(details_operateur) 
+            details_operateur = redis_connexion.hgetall("operateur :{}".format(identifiant))
+
+            # Convertir les clés et les valeurs en chaînes de caractères
+            details_operateur = {key.decode(): value.decode() for key, value in details_operateur.items()}
+
+            details_operateur["id"] = identifiant.decode()  # on ajoute l'identifiant au dictionnaire
+            operateurs.append(details_operateur)
 
         return operateurs
+
+    @staticmethod
+    def destroy_all():
+        """
+        Supprime tous les opérateurs : 
+        - Dans le set identifiants_operateurs contenant les id 
+        - Dans le hash operateur contenant les détails des opérateurs 
+        """
+        # On récupère tous les identifiants enregistrés 
+        all_keys = Operator.list_id()
+
+        # Parcourir les clés et supprimer les hachages redis 
+        for key in all_keys:
+            # on supprime l'identifiant du set contenant les identifiants 
+            redis_connexion.srem("identifiants_operateurs",key)
+
+            # on supprime les éléments du hash contenant les détails de l'appel 
+            redis_connexion.delete("operateur :{}".format(key))
 
     @staticmethod
     def get_instance_by_id(identifiant):
         """
         Retourne un objet Operateur pour un identifiant donné
         """
-        identifiant_operateur= redis_connexion.smembers("identifiants_operateurs")
+        identifiant_operateur= Operator.list_id()
+
         if identifiant in identifiant_operateur:
 
             details_operateur = redis_connexion.hgetall("operateur :{}".format(identifiant))
